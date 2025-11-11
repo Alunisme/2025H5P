@@ -3,33 +3,42 @@
 // -----------------------------------------------------------------
 
 
-// let scoreText = "成績分數: " + finalScore + "/" + maxScore;
-// 確保這是全域變數
-let finalScore = 0; 
+// 初始提示與全域變數（預設為 0，並提供友善提示）
+let finalScore = 0;
 let maxScore = 0;
-let scoreText = ""; // 用於 p5.js 繪圖的文字
+let scoreText = "尚未收到分數，等待 H5P 傳送..."; // 用於 p5.js 繪圖的文字
 
 
 window.addEventListener('message', function (event) {
-    // 執行來源驗證...
-    // ...
+    // 執行來源驗證... 可視情況補強
     const data = event.data;
-    
+
+    // debug 日誌：印出來源與內容，方便追蹤是否真有收到 H5P 的 postMessage
+    try {
+        console.log('收到 postMessage => origin:', event.origin, 'data:', data);
+    } catch (e) {}
+
     if (data && data.type === 'H5P_SCORE_RESULT') {
-        
-        // !!! 關鍵步驟：更新全域變數 !!!
-        finalScore = data.score; // 更新全域變數
-        maxScore = data.maxScore;
+        // 更新全域變數，並確保轉為數字（避免字串或 undefined 導致 NaN）
+        finalScore = Number(data.score) || 0;
+        maxScore = Number(data.maxScore) || 0;
         scoreText = `最終成績分數: ${finalScore}/${maxScore}`;
-        
-        console.log("新的分數已接收:", scoreText); 
-        
-        // ----------------------------------------
-        // 關鍵步驟 2: 呼叫重新繪製 (見方案二)
-        // ----------------------------------------
-        if (typeof redraw === 'function') {
-            redraw(); 
-        }
+        console.log("新的分數已接收:", scoreText);
+
+        // 嘗試初始化 SCORM (wrapper 會忽略重複初始化)
+        try { if (typeof scormInit === 'function') scormInit(); } catch (e) {}
+
+        // 增加嘗試次數（會儲存在 cmi.suspend_data 中）
+        try { if (typeof scormIncrementAttempt === 'function') scormIncrementAttempt(); } catch (e) {}
+
+        // 記錄分數到 LMS（SCORM 1.2）
+        try { if (typeof scormRecordScore === 'function') scormRecordScore(finalScore, maxScore); } catch (e) {}
+
+        // 強制 commit
+        try { if (typeof scormCommit === 'function') scormCommit(); } catch (e) {}
+
+        // 重新繪製畫面（若你用 noLoop() 或是想立即 redraw）
+        try { if (typeof redraw === 'function') redraw(); } catch (e) {}
     }
 }, false);
 
@@ -72,7 +81,7 @@ class Particle {
 
 function setup() { 
     // ... (其他設置)
-    createCanvas(windowWidth / 2, windowHeight / 2); 
+    createCanvas(windowWidth, windowHeight); 
     particles = [];
     loop(); // 啟用持續動畫
 } 
@@ -91,40 +100,50 @@ function draw() {
         particles.push(new Particle());
     }
 
-    // 計算百分比
-    let percentage = (finalScore / maxScore) * 100;
+    // 安全計算百分比（避免除以 0 或得到 NaN）
+    let hasScore = maxScore > 0;
+    let percentage = hasScore ? (finalScore / maxScore) * 100 : 0;
+    // 限制到 0-100 範圍
+    percentage = constrain(isFinite(percentage) ? percentage : 0, 0, 100);
 
-    textSize(80); 
+    textSize(80);
     textAlign(CENTER);
-    
-    // -----------------------------------------------------------------
-    // A. 根據分數區間改變文本顏色和內容 (畫面反映一)
-    // -----------------------------------------------------------------
-    if (percentage >= 90) {
-        // 滿分或高分：顯示鼓勵文本，使用鮮豔顏色
-        fill(0, 200, 50); // 綠色 [6]
-        text("恭喜！優異成績！", width / 2, height / 2 - 50);
-        
-    } else if (percentage >= 60) {
-        // 中等分數：顯示一般文本，使用黃色 [6]
-        fill(255, 181, 35); 
-        text("成績良好，請再接再厲。", width / 2, height / 2 - 50);
-        
-    } else if (percentage > 0) {
-        // 低分：顯示警示文本，使用紅色 [6]
-        fill(200, 0, 0); 
-        text("需要加強努力！", width / 2, height / 2 - 50);
-        
-    } else {
-        // 尚未收到分數或分數為 0
+
+    // 如果還沒收到分數就顯示提示文字
+    if (!hasScore) {
         fill(150);
         text(scoreText, width / 2, height / 2);
-    }
 
-    // 顯示具體分數
-    textSize(50);
-    fill(220);
-    text(`得分: ${finalScore}/${maxScore}`, width / 2, height / 2 + 50);
+        // 顯示簡短提示（小字）
+        textSize(24);
+        fill(180);
+        text("（可在 console 使用 window.postMessage 測試）", width / 2, height / 2 + 40);
+
+    } else {
+        // -----------------------------------------------------------------
+        // A. 根據分數區間改變文本顏色和內容 (畫面反映一)
+        // -----------------------------------------------------------------
+        if (percentage >= 90) {
+            // 滿分或高分：顯示鼓勵文本，使用鮮豔顏色
+            fill(0, 200, 50); // 綠色 [6]
+            text("恭喜！優異成績！", width / 2, height / 2 - 50);
+
+        } else if (percentage >= 60) {
+            // 中等分數：顯示一般文本，使用黃色 [6]
+            fill(255, 181, 35);
+            text("成績良好，請再接再厲。", width / 2, height / 2 - 50);
+
+        } else {
+            // 低分：顯示警示文本，使用紅色 [6]
+            fill(200, 0, 0);
+            text("需要加強努力！", width / 2, height / 2 - 50);
+        }
+
+        // 顯示具體分數與百分比
+        textSize(50);
+        fill(220);
+        text(`得分: ${finalScore}/${maxScore} (${Math.round(percentage)}%)`, width / 2, height / 2 + 50);
+    }
     
     
     // -----------------------------------------------------------------
@@ -203,4 +222,9 @@ function updateParticles() {
             particles.splice(i, 1);
         }
     }
+}
+
+// 視窗調整時重新計算 canvas 大小
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
 }
