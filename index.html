@@ -10,6 +10,8 @@
 
     <script src="libraries/p5.min.js"></script>
     <script src="libraries/p5.sound.min.js"></script>
+    <!-- SCORM wrapper (for LMS communication) -->
+    <script src="scorm_api_wrapper.js"></script>
     <!-- 引入您的分數顯示邏輯 (必須在 p5.js 之後載入) -->
     <!-- 確保 JS 檔案載入順序正確，以讓變數作用於全域範圍 [4] -->
     <script src="sketch.js"></script>
@@ -30,8 +32,9 @@
         /* p5.js Canvas 會自動創建在 body 內 */
     </style>
 </head>
-<body>
-    <h1>攝影技巧小測驗</h1>
+<body onload="try{scormInit();}catch(e){}" onbeforeunload="try{scormFinish();}catch(e){}">
+    <!-- 頁面會在 LMS 中啟動 SCORM session -->
+    <h1 style="display:none;">攝影技巧小測驗</h1>
     
     <div id="h5pContainer">
         <!-- 嵌入 H5P 匯出檔案 -->
@@ -39,8 +42,8 @@
         <iframe 
             id="h5pIframe" 
             src="2.html" 
-            width="1000" 
-            height="700" 
+            width="800" 
+            height="600" 
             style="border: 2px solid #ccc;">
         </iframe>
     </div>
