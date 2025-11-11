@@ -15,15 +15,98 @@ window.addEventListener('message', function (event) {
 
     // debug 日誌：印出來源與內容，方便追蹤是否真有收到 H5P 的 postMessage
     try {
-        console.log('收到 postMessage => origin:', event.origin, 'data:', data);
+        console.log('收到 postMessage => origin:', event.origin, 'type:', (data && data.type) || typeof data, 'data:', data);
     } catch (e) {}
 
+    // 輔助函式：遞迴搜尋物件中可能的 score / max 值（xAPI 等不同結構）
+    function extractScoreFromObject(obj) {
+        const result = { score: null, maxScore: null, scaled: null };
+        const seen = new Set();
+
+        function recurse(o) {
+            if (!o || typeof o !== 'object' || seen.has(o)) return;
+            seen.add(o);
+
+            for (const key in o) {
+                if (!Object.prototype.hasOwnProperty.call(o, key)) continue;
+                const val = o[key];
+                const k = String(key).toLowerCase();
+
+                // 直接數值或數字字串
+                if ((k.includes('score') || k === 'raw' || k === 'scaled') && (typeof val === 'number' || (typeof val === 'string' && !isNaN(Number(val))))) {
+                    const n = Number(val);
+                    if (k.includes('max')) {
+                        result.maxScore = result.maxScore ?? n;
+                    } else if (k === 'scaled') {
+                        result.scaled = n; // 0..1
+                    } else if (k === 'raw' || k.includes('score')) {
+                        // 優先把 raw/score 當作實際得分
+                        result.score = result.score ?? n;
+                    }
+                }
+
+                // 常見命名：max、maximum
+                if ((k === 'max' || k === 'maximum' || k === 'maxscore') && (typeof val === 'number' || (typeof val === 'string' && !isNaN(Number(val))))) {
+                    result.maxScore = result.maxScore ?? Number(val);
+                }
+
+                // 若為物件則繼續遞迴
+                if (typeof val === 'object') recurse(val);
+            }
+        }
+
+        recurse(obj);
+        return result;
+    }
+
+    // 嘗試多種方式解析分數：優先使用明確 type，否則廣泛解析 payload
+    let parsed = { found: false, score: 0, max: 0 };
+
+    // 1) 明確格式（你的原本預期）
     if (data && data.type === 'H5P_SCORE_RESULT') {
-        // 更新全域變數，並確保轉為數字（避免字串或 undefined 導致 NaN）
-        finalScore = Number(data.score) || 0;
-        maxScore = Number(data.maxScore) || 0;
+        parsed.found = true;
+        parsed.score = Number(data.score) || 0;
+        parsed.max = Number(data.maxScore) || 0;
+        console.log('解析路徑：H5P_SCORE_RESULT');
+    }
+
+    // 2) 如果沒有找到，再檢查是否是直接的 {score, maxScore}
+    if (!parsed.found && data && typeof data === 'object') {
+        if ((('score' in data) || ('maxScore' in data) || ('max' in data))) {
+            const s = Number(data.score ?? data.raw ?? data.value);
+            const m = Number(data.maxScore ?? data.max ?? data.maximum);
+            if (!isNaN(s)) parsed.score = s;
+            if (!isNaN(m)) parsed.max = m;
+            if ((parsed.score || parsed.max)) parsed.found = true;
+            if (parsed.found) console.log('解析路徑：top-level score/max');
+        }
+    }
+
+    // 3) 廣泛遞迴搜尋（處理 xAPI statement 與其他結構）
+    if (!parsed.found && data && typeof data === 'object') {
+        const ex = extractScoreFromObject(data);
+        if (ex.score != null || ex.scaled != null) {
+            parsed.found = true;
+            // 若找到 scaled (0..1)，預設 max 為 100
+            if (ex.score != null) parsed.score = Number(ex.score);
+            if (ex.maxScore != null) parsed.max = Number(ex.maxScore);
+            if ((parsed.max === 0 || isNaN(parsed.max)) && ex.scaled != null) {
+                // scaled 有值，把 scaled 當作得分比例
+                parsed.score = ex.scaled * 100;
+                parsed.max = 100;
+            }
+            // 若只有 score 而沒有 max，猜測 max 為 100
+            if (parsed.score && (!parsed.max || parsed.max === 0)) parsed.max = 100;
+            console.log('解析路徑：遞迴搜尋 xAPI-like 結構', ex);
+        }
+    }
+
+    // 最後，如果解析到分數才寫入並記錄
+    if (parsed.found) {
+        finalScore = Number(parsed.score) || 0;
+        maxScore = Number(parsed.max) || 0;
         scoreText = `最終成績分數: ${finalScore}/${maxScore}`;
-        console.log("新的分數已接收:", scoreText);
+        console.log('新的分數已接收:', scoreText, '（來源 origin:', event.origin, '）');
 
         // 嘗試初始化 SCORM (wrapper 會忽略重複初始化)
         try { if (typeof scormInit === 'function') scormInit(); } catch (e) {}
@@ -39,6 +122,9 @@ window.addEventListener('message', function (event) {
 
         // 重新繪製畫面（若你用 noLoop() 或是想立即 redraw）
         try { if (typeof redraw === 'function') redraw(); } catch (e) {}
+    } else {
+        // 沒有解析到分數的情況：印出方便 debug 的提示
+        try { console.log('postMessage 未包含可解析的分數。檢查 payload keys：', Object.keys(data || {})); } catch (e) {}
     }
 }, false);
 
@@ -76,115 +162,6 @@ class Particle {
     
     isDead() {
         return this.life <= 0;
-    }
-}
-
-function setup() { 
-    // ... (其他設置)
-    createCanvas(windowWidth, windowHeight); 
-    particles = [];
-    loop(); // 啟用持續動畫
-} 
-
-// score_display.js 中的 draw() 函數片段
-
-function draw() { 
-    // 深色質感背景 - 使用漸層效果
-    drawGradientBackground();
-    
-    // 更新並顯示粒子
-    updateParticles();
-    
-    // 定期生成新粒子
-    if (random(1) < 0.3) {
-        particles.push(new Particle());
-    }
-
-    // 安全計算百分比（避免除以 0 或得到 NaN）
-    let hasScore = maxScore > 0;
-    let percentage = hasScore ? (finalScore / maxScore) * 100 : 0;
-    // 限制到 0-100 範圍
-    percentage = constrain(isFinite(percentage) ? percentage : 0, 0, 100);
-
-    textSize(80);
-    textAlign(CENTER);
-
-    // 如果還沒收到分數就顯示提示文字
-    if (!hasScore) {
-        fill(150);
-        text(scoreText, width / 2, height / 2);
-
-        // 顯示簡短提示（小字）
-        textSize(24);
-        fill(180);
-        text("（可在 console 使用 window.postMessage 測試）", width / 2, height / 2 + 40);
-
-    } else {
-        // -----------------------------------------------------------------
-        // A. 根據分數區間改變文本顏色和內容 (畫面反映一)
-        // -----------------------------------------------------------------
-        if (percentage >= 90) {
-            // 滿分或高分：顯示鼓勵文本，使用鮮豔顏色
-            fill(0, 200, 50); // 綠色 [6]
-            text("恭喜！優異成績！", width / 2, height / 2 - 50);
-
-        } else if (percentage >= 60) {
-            // 中等分數：顯示一般文本，使用黃色 [6]
-            fill(255, 181, 35);
-            text("成績良好，請再接再厲。", width / 2, height / 2 - 50);
-
-        } else {
-            // 低分：顯示警示文本，使用紅色 [6]
-            fill(200, 0, 0);
-            text("需要加強努力！", width / 2, height / 2 - 50);
-        }
-
-        // 顯示具體分數與百分比
-        textSize(50);
-        fill(220);
-        text(`得分: ${finalScore}/${maxScore} (${Math.round(percentage)}%)`, width / 2, height / 2 + 50);
-    }
-    
-    
-    // -----------------------------------------------------------------
-    // B. 根據分數觸發不同的幾何圖形反映 (畫面反映二)
-    // -----------------------------------------------------------------
-    
-    if (percentage >= 90) {
-        // 畫一個會脈動的圓圈代表完美
-        let pulseSize = 150 + sin(frameCount * 0.05) * 20;
-        fill(0, 200, 50, 200); 
-        noStroke();
-        circle(width / 2, height / 2 + 150, pulseSize);
-        
-        // 外圍光暈
-        fill(0, 200, 50, 50);
-        circle(width / 2, height / 2 + 150, pulseSize + 30);
-        
-    } else if (percentage >= 60) {
-        // 畫一個會旋轉的方形
-        push();
-        translate(width / 2, height / 2 + 150);
-        rotate(frameCount * 0.02);
-        fill(255, 181, 35, 200);
-        rectMode(CENTER);
-        rect(0, 0, 150, 150);
-        
-        // 外圍邊框
-        stroke(255, 181, 35, 100);
-        strokeWeight(2);
-        rect(0, 0, 180, 180);
-        pop();
-        
-    } else if (percentage > 0) {
-        // 低分顯示警示動畫
-        let waveSize = 100 + abs(sin(frameCount * 0.08)) * 30;
-        fill(255, 100, 100, 150);
-        noStroke();
-        circle(width / 2, height / 2 + 150, waveSize);
-        
-        fill(255, 100, 100, 80);
-        circle(width / 2, height / 2 + 150, waveSize + 40);
     }
 }
 
